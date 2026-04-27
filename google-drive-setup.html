@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Google Drive Setup Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; }
+        .step { margin-bottom: 30px; padding: 20px; border: 1px solid #ddd; border-radius: 8px; }
+        .code { background: #f4f4f4; padding: 10px; border-radius: 4px; font-family: monospace; }
+        .warning { background: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; border-radius: 4px; margin: 15px 0; }
+    </style>
+</head>
+<body>
+    <h1>🚀 Google Drive Integration Setup</h1>
+
+    <div class="warning">
+        <strong>Note:</strong> The Google Drive integration is now implemented in your app! To fully test it, you'll need to complete the Google Cloud Console setup below. The UI elements are already working - they'll just show connection errors until you add real credentials.
+    </div>
+
+    <div class="step">
+        <h2>✅ What's Already Done</h2>
+        <ul>
+            <li>Google APIs client library installed</li>
+            <li>Authentication functions implemented</li>
+            <li>Upload/download/sync logic ready</li>
+            <li>UI components added to import/export section</li>
+            <li>Modal for browsing backups</li>
+            <li>Real-time sync status indicators</li>
+        </ul>
+    </div>
+
+    <div class="step">
+        <h2>🔧 Quick Setup (5 minutes)</h2>
+        <ol>
+            <li><strong>Create Google Cloud Project:</strong><br>
+                Go to <a href="https://console.cloud.google.com/" target="_blank">Google Cloud Console</a><br>
+                Create new project → Name it "GIAC Book Indexer"</li>
+
+            <li><strong>Enable Drive API:</strong><br>
+                APIs & Services → Library → Search "Google Drive API" → Enable</li>
+
+            <li><strong>Create OAuth Credentials:</strong><br>
+                APIs & Services → Credentials → Create Credentials → OAuth 2.0 Client IDs<br>
+                Application type: Web application<br>
+                Authorized origins: <code>http://localhost:5181</code><br>
+                Authorized redirect URIs: <code>http://localhost:5181</code></li>
+
+            <li><strong>Update Code:</strong><br>
+                Open <code>src/utils.ts</code> and replace:<br>
+                <div class="code">
+                export const GOOGLE_CLIENT_ID = 'your-actual-client-id-here';
+                </div>
+            </li>
+
+            <li><strong>Test:</strong><br>
+                Run <code>npm run dev</code> → Click "Connect to Drive" → Sign in!</li>
+        </ol>
+    </div>
+
+    <div class="step">
+        <h2>🎯 Features Available</h2>
+        <ul>
+            <li><strong>Connect/Disconnect:</strong> OAuth-based Google account linking</li>
+            <li><strong>Backup to Drive:</strong> Upload current index as JSON backup</li>
+            <li><strong>Sync with Drive:</strong> Intelligent merge of local and cloud data</li>
+            <li><strong>Browse Backups:</strong> View and restore from previous cloud backups</li>
+            <li><strong>Auto-sync:</strong> Detects and handles conflicts automatically</li>
+        </ul>
+    </div>
+
+    <div class="step">
+        <h2>🔒 Security & Privacy</h2>
+        <ul>
+            <li>Data stored in app-specific Google Drive folder (not visible in regular Drive)</li>
+            <li>OAuth scope limited to file operations only</li>
+            <li>No access to user's other Drive files</li>
+            <li>Backups encrypted in transit (HTTPS)</li>
+        </ul>
+    </div>
+
+    <div class="step">
+        <h2>🚀 Production Deployment</h2>
+        <p>When deploying to production, also add your domain to authorized origins/redirect URIs in Google Cloud Console.</p>
+        <p>Consider using environment variables for credentials instead of hardcoding them.</p>
+    </div>
+
+    <p><strong>Ready to test?</strong> Your app is running at <a href="http://localhost:5181" target="_blank">http://localhost:5181</a></p>
+</body>
+</html>

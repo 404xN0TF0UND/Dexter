@@ -1,0 +1,15 @@
+﻿                      updateEntry(entry.id, { studied: e.target.checked, lastReviewed: e.target.checked ? Date.now() : entry.lastReviewed });
+                    }} /> Studied</label>
+                    <button onClick={() => deleteEntry(entry.id)}>Delete</button>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default App;
