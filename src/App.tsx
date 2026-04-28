@@ -1,9 +1,17 @@
 import { useState, useEffect } from 'react';
 import type { Entry, IndexMetadata, StudySession, StudySessionGoal } from './types';
-import { exportToXLSX, exportToCSV, exportToDOCX, exportToPDF, importFromCSV, parseBulk, enhancedSearch, getSearchDiscoveryHints, getReviewStatus, exportAsIndexText, getAllIndexes, getCurrentIndexId, createIndex, deleteIndex, updateIndexMetadata, saveIndexEntries, loadIndexEntries, saveIndexHistory, loadIndexHistory, autoBackupIndex, restoreFromIndexHistory, signInToGoogle, signOutFromGoogle, isSignedInToGoogle, backupToGoogleDrive, restoreFromGoogleDrive, syncWithGoogleDrive, listGoogleDriveFiles, initializeSpacedRepetition, calculateNextReview, getDueEntries, getEntriesDueToday, createStudySession, saveStudySession, loadStudySessions, deleteStudySession, updateStudySessionProgress, completeStudySession, initializeSecurity } from './utils';
+import { exportToXLSX, exportToCSV, exportToDOCX, exportToPDF, importFromCSV, parseBulk, enhancedSearch, getSearchDiscoveryHints, getReviewStatus, exportAsIndexText, getAllIndexes, getCurrentIndexId, createIndex, deleteIndex, updateIndexMetadata, saveIndexEntries, loadIndexEntries, saveIndexHistory, loadIndexHistory, autoBackupIndex, restoreFromIndexHistory, signInToGoogle, signOutFromGoogle, isSignedInToGoogle, backupToGoogleDrive, restoreFromGoogleDrive, syncWithGoogleDrive, listGoogleDriveFiles, initializeSpacedRepetition, calculateNextReview, getDueEntries, getEntriesDueToday, createStudySession, saveStudySession, loadStudySessions, deleteStudySession, updateStudySessionProgress, completeStudySession, initializeSecurity, verifyIndexBackups, cleanupIndexBackups, cleanupIndexHistory } from './utils';
+import { PrivacyPolicy } from './PrivacyPolicy';
 import type { ReviewStatus } from './types';
+import type { PrivacySettings as PrivacySettingsType } from './security';
+import { getPrivacySettings, updatePrivacySettings as updatePrivacySettingsStorage, acceptPrivacyPolicy, isPasswordProtectionEnabled, enablePasswordProtection, disablePasswordProtection, verifyPassword, DEFAULT_PRIVACY_SETTINGS, cleanupAuditLogs } from './security';
+import { initTelemetry, captureError, captureBreadcrumb } from './telemetry';
+import { ObservabilityDashboard } from './components/ObservabilityDashboard';
 import toast, { Toaster } from 'react-hot-toast';
 import './App.css';
+
+type FlashcardSetOption = 'all' | 'due' | 'favorites' | 'unstudied' | 'category' | 'tag';
+type FlashcardQuestionMode = 'termToNotes' | 'notesToTerm' | 'mixed';
 
 const App = () => {
   // State declarations
@@ -24,6 +32,10 @@ const App = () => {
   const [viewMode, setViewMode] = useState<'list' | 'index' | 'flashcard'>('list');
   const [flashcardIndex, setFlashcardIndex] = useState(0);
   const [showFlashcardAnswer, setShowFlashcardAnswer] = useState(false);
+  const [flashcardSet, setFlashcardSet] = useState<FlashcardSetOption>('all');
+  const [flashcardCategory, setFlashcardCategory] = useState('');
+  const [flashcardTag, setFlashcardTag] = useState('');
+  const [flashcardQuestionMode, setFlashcardQuestionMode] = useState<FlashcardQuestionMode>('termToNotes');
   const [filterFavorites, setFilterFavorites] = useState(false);
   const [filterTag, setFilterTag] = useState('');
   const [filterReviewStatus, setFilterReviewStatus] = useState<ReviewStatus | 'all'>('all');
@@ -41,30 +53,30 @@ const App = () => {
   const [currentStudySession, setCurrentStudySession] = useState<StudySession | null>(null);
   const [showCreateSession, setShowCreateSession] = useState(false);
   const [showPrivacySettings, setShowPrivacySettings] = useState(false);
+  const [showPrivacyPolicyModal, setShowPrivacyPolicyModal] = useState(false);
+  const [showLockScreen, setShowLockScreen] = useState(false);
+  const [unlockPassword, setUnlockPassword] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [passwordActionMessage, setPasswordActionMessage] = useState('');
+  const [privacySettings, setPrivacySettings] = useState<PrivacySettingsType>(DEFAULT_PRIVACY_SETTINGS);
   const [newSessionName, setNewSessionName] = useState('');
   const [newSessionGoal, setNewSessionGoal] = useState<StudySessionGoal>({ type: 'count', value: 20 });
   const [sessionStartTime, setSessionStartTime] = useState<number | null>(null);
   const [currentCardIndex, setCurrentCardIndex] = useState(0);
   const [showAnswer, setShowAnswer] = useState(false);
   const [cardStartTime, setCardStartTime] = useState<number | null>(null);
+  const [showObservabilityDash, setShowObservabilityDash] = useState(false);
 
-  // Privacy settings state
-  const [privacySettings, setPrivacySettings] = useState(() => {
-    const defaults = {
-      enableEncryption: true,
-      encryptBackups: true,
-      enableAnalytics: false,
-      enableErrorReporting: false,
-      allowDataSharing: false,
-      dataRetentionDays: 365
-    };
-    return defaults;
-  });
-
-  // Initialize app and migrate data
-  useEffect(() => {
-    const initializeApp = async () => {
+  const initializeApp = async () => {
+    try {
       await initializeSecurity();
+
+      const settings = getPrivacySettings();
+      initTelemetry(settings);
+
+      captureBreadcrumb('App initialization started', { timestamp: new Date().toISOString() });
 
       const indexes = await getAllIndexes();
       if (indexes.length === 0) {
@@ -96,6 +108,12 @@ const App = () => {
       setEntries(currentEntries);
       setAllIndexes(await getAllIndexes());
 
+      // Verify backups for current index
+      const backupStatus = await verifyIndexBackups(currentId);
+      if (backupStatus.errors.length > 0) {
+        captureBreadcrumb('Backup verification warnings', { errorCount: backupStatus.errors.length });
+      }
+
       // Load study sessions for the current index
       const sessions = await loadStudySessions(currentId);
       setStudySessions(sessions);
@@ -107,9 +125,52 @@ const App = () => {
         await saveIndexEntries(currentId, updatedEntries);
         setEntries(updatedEntries);
       }
+
+      captureBreadcrumb('App initialization completed successfully');
+    } catch (error) {
+      captureError(error, { context: 'App initialization failed' });
+      console.error('Failed to initialize app:', error);
+      toast.error('Failed to initialize app');
+    }
+  };
+
+  const performDataCleanup = async () => {
+    try {
+      const settings = getPrivacySettings();
+      if (settings.retentionPeriod > 0) {
+        const auditDeleted = await cleanupAuditLogs(settings.retentionPeriod);
+        const backupDeleted = await cleanupIndexBackups(currentIndexId, settings.retentionPeriod);
+        const historyDeleted = await cleanupIndexHistory(currentIndexId, settings.retentionPeriod);
+
+        captureBreadcrumb('Data cleanup completed', {
+          auditDeleted,
+          backupDeleted,
+          historyDeleted,
+          retentionDays: settings.retentionPeriod
+        });
+
+        toast.success(`Cleanup: ${auditDeleted + backupDeleted + historyDeleted} items removed`);
+      }
+    } catch (error) {
+      captureError(error, { context: 'Data cleanup failed' });
+      console.error('Data cleanup failed:', error);
+    }
+  };
+
+  useEffect(() => {
+    const initializeFromStorage = async () => {
+      const settings = getPrivacySettings();
+      setPrivacySettings(settings);
+
+      if (settings.passwordProtectionEnabled && isPasswordProtectionEnabled()) {
+        setShowLockScreen(true);
+        return;
+      }
+
+      await initializeApp();
     };
 
-    initializeApp();
+    initializeFromStorage();
   }, []);
 
   // Auto-save entries
@@ -356,13 +417,13 @@ const App = () => {
     if (currentEntry) {
       // Update spaced repetition data
       const updatedEntry = calculateNextReview(currentEntry, response);
-      updateEntry(updatedEntry.id, {
-        easeFactor: updatedEntry.easeFactor,
-        interval: updatedEntry.interval,
-        repetitions: updatedEntry.repetitions,
-        nextReview: updatedEntry.nextReview,
-        lastReviewed: updatedEntry.lastReviewed
-      });
+      const updates: Partial<Entry> = {};
+      if (updatedEntry.easeFactor !== undefined) updates.easeFactor = updatedEntry.easeFactor;
+      if (updatedEntry.interval !== undefined) updates.interval = updatedEntry.interval;
+      if (updatedEntry.repetitions !== undefined) updates.repetitions = updatedEntry.repetitions;
+      if (updatedEntry.nextReview !== undefined) updates.nextReview = updatedEntry.nextReview;
+      if (updatedEntry.lastReviewed !== undefined) updates.lastReviewed = updatedEntry.lastReviewed;
+      updateEntry(updatedEntry.id, updates);
 
       // Update session progress
       const updatedSession = updateStudySessionProgress(currentStudySession, currentEntry.id, response, timeSpent);
@@ -425,6 +486,50 @@ const App = () => {
     mastered: entries.filter(e => (e.repetitions || 0) >= 5).length
   };
 
+  const tagOptions = [...new Set(entries.flatMap(entry => entry.tags))].filter(Boolean);
+
+  const getFlashcardQuestion = (entry: Entry, mode: FlashcardQuestionMode): { question: string; answer: string } => {
+    const defaultAnswer = entry.notes || entry.bookTitle || `Book ${entry.book}, Page ${entry.page}`;
+
+    switch (mode) {
+      case 'notesToTerm':
+        return {
+          question: entry.notes ? `What term matches this description?
+
+${entry.notes}` : `What term is described by Book ${entry.book}, Page ${entry.page}?`,
+          answer: entry.term || defaultAnswer
+        };
+      case 'mixed':
+        return (flashcardIndex % 2 === 0)
+          ? getFlashcardQuestion(entry, 'termToNotes')
+          : getFlashcardQuestion(entry, 'notesToTerm');
+      case 'termToNotes':
+      default:
+        return {
+          question: `What are the details for: ${entry.term}?`,
+          answer: defaultAnswer
+        };
+    }
+  };
+
+  const getFlashcardEntries = (baseEntries: Entry[]): Entry[] => {
+    switch (flashcardSet) {
+      case 'due':
+        return getDueEntries(baseEntries);
+      case 'favorites':
+        return baseEntries.filter(entry => entry.favorite);
+      case 'unstudied':
+        return baseEntries.filter(entry => !entry.studied);
+      case 'category':
+        return flashcardCategory ? baseEntries.filter(entry => entry.category === flashcardCategory) : baseEntries;
+      case 'tag':
+        return flashcardTag ? baseEntries.filter(entry => entry.tags.includes(flashcardTag)) : baseEntries;
+      case 'all':
+      default:
+        return baseEntries;
+    }
+  };
+
   let filteredEntries = entries;
   if (filterCategory) {
     filteredEntries = filteredEntries.filter(e => e.category === filterCategory);
@@ -452,7 +557,12 @@ const App = () => {
     filteredEntries = enhancedSearch(filteredEntries, searchTerm);
   }
 
+  const flashcardEntries = getFlashcardEntries(filteredEntries);
   const searchHints = getSearchDiscoveryHints(entries, searchTerm);
+  const currentFlashcard = flashcardEntries[flashcardIndex] || null;
+  const currentFlashcardQuestion = currentFlashcard
+    ? getFlashcardQuestion(currentFlashcard, flashcardQuestionMode)
+    : { question: '', answer: '' };
 
   useEffect(() => {
     const handleKeydown = (e: KeyboardEvent) => {
@@ -499,6 +609,20 @@ const App = () => {
     window.addEventListener('keydown', handleKeydown);
     return () => window.removeEventListener('keydown', handleKeydown);
   }, [viewMode, filteredEntries.length, flashcardIndex, showFlashcardAnswer]);
+
+  useEffect(() => {
+    if (flashcardSet === 'category' && !flashcardCategory && categories.length > 0) {
+      setFlashcardCategory(categories[0]!);
+    }
+    if (flashcardSet === 'tag' && !flashcardTag && tagOptions.length > 0) {
+      setFlashcardTag(tagOptions[0]!);
+    }
+  }, [flashcardSet, categories, tagOptions, flashcardCategory, flashcardTag]);
+
+  useEffect(() => {
+    setFlashcardIndex(0);
+    setShowFlashcardAnswer(false);
+  }, [flashcardSet, flashcardCategory, flashcardTag, flashcardQuestionMode, flashcardEntries.length]);
 
   const addEntry = () => {
     if (!newEntry.term || !newEntry.book || !newEntry.page) {
@@ -593,11 +717,71 @@ const App = () => {
     }
   };
 
-  const updatePrivacySettings = (updates: Partial<typeof privacySettings>) => {
+  const savePrivacySettings = (updates: Partial<PrivacySettingsType>) => {
     const newSettings = { ...privacySettings, ...updates };
     setPrivacySettings(newSettings);
-    // Save to localStorage
-    localStorage.setItem('privacy-settings', JSON.stringify(newSettings));
+    updatePrivacySettingsStorage(updates);
+  };
+
+  const handleAcceptPrivacyPolicy = () => {
+    acceptPrivacyPolicy();
+    setShowPrivacyPolicyModal(false);
+  };
+
+  const handleUnlock = async () => {
+    if (!unlockPassword) {
+      setPasswordError('Enter your password to unlock the app.');
+      return;
+    }
+
+    const valid = await verifyPassword(unlockPassword);
+    if (!valid) {
+      setPasswordError('Invalid password, please try again.');
+      return;
+    }
+
+    setPasswordError('');
+    setUnlockPassword('');
+    setShowLockScreen(false);
+    await initializeApp();
+  };
+
+  const handleEnablePasswordProtection = async () => {
+    setPasswordActionMessage('');
+    if (newPassword.length < 6) {
+      setPasswordActionMessage('Password must be at least 6 characters long.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPasswordActionMessage('Passwords do not match.');
+      return;
+    }
+
+    try {
+      await enablePasswordProtection(newPassword);
+      savePrivacySettings({ passwordProtectionEnabled: true });
+      setPasswordActionMessage('Password protection enabled.');
+      setNewPassword('');
+      setConfirmPassword('');
+    } catch (error) {
+      console.error('Failed to enable password protection:', error);
+      setPasswordActionMessage('Failed to enable password protection.');
+    }
+  };
+
+  const handleDisablePasswordProtection = async () => {
+    if (!confirm('Disable password protection? This will allow access without a password.')) {
+      return;
+    }
+
+    try {
+      await disablePasswordProtection();
+      savePrivacySettings({ passwordProtectionEnabled: false });
+      setPasswordActionMessage('Password protection disabled.');
+    } catch (error) {
+      console.error('Failed to disable password protection:', error);
+      setPasswordActionMessage('Failed to disable password protection.');
+    }
   };
 
   const exportAllData = () => {
@@ -644,7 +828,7 @@ const App = () => {
 
   const grouped = filteredEntries.reduce((acc, entry) => {
     if (!acc[entry.term]) acc[entry.term] = [];
-    acc[entry.term].push(entry);
+    (acc[entry.term] as Entry[]).push(entry);
     return acc;
   }, {} as Record<string, Entry[]>);
 
@@ -656,8 +840,8 @@ const App = () => {
       bVal = b;
     } else {
       // For book or page, use the first entry's value
-      aVal = grouped[a][0][sortBy] as number;
-      bVal = grouped[b][0][sortBy] as number;
+      aVal = grouped[a]?.[0]?.[sortBy] as number ?? 0;
+      bVal = grouped[b]?.[0]?.[sortBy] as number ?? 0;
     }
     if (typeof aVal === 'string' && typeof bVal === 'string') {
       return sortOrder === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
@@ -670,6 +854,40 @@ const App = () => {
   return (
     <div className={`app ${darkMode ? 'dark' : ''}`}>
       <Toaster />
+
+      {showPrivacyPolicyModal && (
+        <PrivacyPolicy
+          onAccept={handleAcceptPrivacyPolicy}
+          onDecline={() => setShowPrivacyPolicyModal(false)}
+          required={false}
+        />
+      )}
+
+      {showLockScreen && (
+        <div className="fixed inset-0 bg-black bg-opacity-70 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-6 mx-4">
+            <h2 className="text-2xl font-semibold mb-4">Unlock Your App</h2>
+            <p className="text-sm text-gray-600 mb-4">
+              This app is protected by a password. Enter it to continue.
+            </p>
+            <input
+              type="password"
+              value={unlockPassword}
+              onChange={e => setUnlockPassword(e.target.value)}
+              placeholder="Enter password"
+              className="w-full px-3 py-2 border rounded mb-3"
+            />
+            {passwordError && <p className="text-sm text-red-600 mb-3">{passwordError}</p>}
+            <div className="flex gap-3">
+              <button onClick={handleUnlock} className="flex-1 bg-blue-500 text-white py-2 rounded hover:bg-blue-600">
+                Unlock
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!showPrivacyPolicyModal && (
       <header>
         <h1>{allIndexes.find(idx => idx.id === currentIndexId)?.name || 'Loading...'}</h1>
         <div className="header-controls">
@@ -691,10 +909,12 @@ const App = () => {
             <button onClick={() => setDarkMode(!darkMode)}>{darkMode ? '☀️ Light' : '🌙 Dark'}</button>
             <button onClick={() => setShowIndexManager(true)}>📁 Manage</button>
             <button onClick={() => setShowStudySessions(true)}>📚 Study</button>
+            <button onClick={() => setShowObservabilityDash(true)}>📊 Monitor</button>
             <button onClick={() => setShowPrivacySettings(true)}>🔒 Privacy</button>
           </div>
         </div>
       </header>
+      )}
 
       {showIndexManager && (
         <div className="modal-overlay" onClick={() => setShowIndexManager(false)}>
@@ -1681,40 +1901,87 @@ const App = () => {
         </div>
       </div>
       <div className="entries">
-        {viewMode === 'flashcard' && filteredEntries.length > 0 && (
+        {viewMode === 'flashcard' && flashcardEntries.length > 0 && (
           <div className="flashcard-mode">
-            <h2>Flashcard Mode ({flashcardIndex + 1}/{filteredEntries.length})</h2>
+            <div style={{ display: 'flex', flexWrap: 'wrap', justifyContent: 'space-between', gap: '12px', marginBottom: '16px' }}>
+              <h2>Flashcard Mode ({flashcardIndex + 1}/{flashcardEntries.length})</h2>
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                <label>
+                  Set:
+                  <select value={flashcardSet} onChange={e => setFlashcardSet(e.target.value as FlashcardSetOption)} style={{ marginLeft: '8px', padding: '6px', minWidth: '130px' }}>
+                    <option value="all">All</option>
+                    <option value="due">Due</option>
+                    <option value="favorites">Favorites</option>
+                    <option value="unstudied">Unstudied</option>
+                    <option value="category">Category</option>
+                    <option value="tag">Tag</option>
+                  </select>
+                </label>
+                {flashcardSet === 'category' && (
+                  <label>
+                    Category:
+                    <select value={flashcardCategory} onChange={e => setFlashcardCategory(e.target.value)} style={{ marginLeft: '8px', padding: '6px', minWidth: '130px' }}>
+                      <option value="">All categories</option>
+                      {categories.map(category => (
+                        <option key={category} value={category}>{category}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                {flashcardSet === 'tag' && (
+                  <label>
+                    Tag:
+                    <select value={flashcardTag} onChange={e => setFlashcardTag(e.target.value)} style={{ marginLeft: '8px', padding: '6px', minWidth: '130px' }}>
+                      <option value="">All tags</option>
+                      {tagOptions.map(tag => (
+                        <option key={tag} value={tag}>{tag}</option>
+                      ))}
+                    </select>
+                  </label>
+                )}
+                <label>
+                  Question mode:
+                  <select value={flashcardQuestionMode} onChange={e => setFlashcardQuestionMode(e.target.value as FlashcardQuestionMode)} style={{ marginLeft: '8px', padding: '6px', minWidth: '160px' }}>
+                    <option value="termToNotes">Term → Details</option>
+                    <option value="notesToTerm">Details → Term</option>
+                    <option value="mixed">Mixed</option>
+                  </select>
+                </label>
+              </div>
+            </div>
             <div className="flashcard" onClick={() => setShowFlashcardAnswer(!showFlashcardAnswer)} style={{ cursor: 'pointer' }}>
               <div className="flashcard-inner">
                 {showFlashcardAnswer ? (
                   <div>
-                    <p className="flashcard-label">Details:</p>
-                    <p className="flashcard-answer">
-                      {filteredEntries[flashcardIndex]?.notes || 'No details'}
-                    </p>
-                    <p style={{ marginTop: '12px', fontSize: '14px', color: '#999' }}>
-                      Book {filteredEntries[flashcardIndex]?.book}, Page {filteredEntries[flashcardIndex]?.page}
-                      {filteredEntries[flashcardIndex]?.category && ` • ${filteredEntries[flashcardIndex]?.category}`}
-                    </p>
+                    <p className="flashcard-label">Answer</p>
+                    <p className="flashcard-answer">{currentFlashcardQuestion.answer || 'No details available'}</p>
+                    {currentFlashcard && (
+                      <p style={{ marginTop: '12px', fontSize: '14px', color: '#999' }}>
+                        Book {currentFlashcard.book}, Page {currentFlashcard.page}
+                        {currentFlashcard.category && ` • ${currentFlashcard.category}`}
+                      </p>
+                    )}
                   </div>
                 ) : (
                   <div>
-                    <p className="flashcard-label">Term:</p>
-                    <p className="flashcard-term">{filteredEntries[flashcardIndex]?.term}</p>
+                    <p className="flashcard-label">Question</p>
+                    <p className="flashcard-term">{currentFlashcardQuestion.question}</p>
                   </div>
                 )}
               </div>
             </div>
             <div style={{ display: 'flex', gap: '8px', justifyContent: 'center', marginTop: '16px' }}>
               <button onClick={() => {
-                setFlashcardIndex((flashcardIndex - 1 + filteredEntries.length) % filteredEntries.length);
+                setFlashcardIndex((flashcardIndex - 1 + flashcardEntries.length) % flashcardEntries.length);
                 setShowFlashcardAnswer(false);
               }}>← Previous</button>
-              <button onClick={() => updateEntry(filteredEntries[flashcardIndex]?.id, { studied: !filteredEntries[flashcardIndex]?.studied })}>
-                {filteredEntries[flashcardIndex]?.studied ? 'Mark Unseen' : 'Mark Studied'}
+              <button
+                onClick={() => currentFlashcard && updateEntry(currentFlashcard.id, { studied: !currentFlashcard.studied })}
+              >
+                {currentFlashcard?.studied ? 'Mark Unseen' : 'Mark Studied'}
               </button>
               <button onClick={() => {
-                setFlashcardIndex((flashcardIndex + 1) % filteredEntries.length);
+                setFlashcardIndex((flashcardIndex + 1) % flashcardEntries.length);
                 setShowFlashcardAnswer(false);
               }}>Next →</button>
             </div>
@@ -1751,8 +2018,8 @@ const App = () => {
           <>
             {sortedTerms.map(term => (
               <div key={term} className="term-group">
-                <h2>{term} ({grouped[term].length})</h2>
-                {grouped[term].map(entry => (
+                <h2>{term} ({grouped[term]!.length})</h2>
+                {grouped[term]!.map(entry => (
                   <div key={entry.id} className={`entry ${entry.highlighted ? 'highlighted' : ''} ${entry.studied ? 'studied' : ''} ${entry.favorite ? 'favorite' : ''}`}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                       <input value={entry.term} onChange={e => updateEntry(entry.id, { term: e.target.value })} />
@@ -1788,7 +2055,13 @@ const App = () => {
                     </div>
                     <label><input type="checkbox" checked={entry.highlighted} onChange={e => updateEntry(entry.id, { highlighted: e.target.checked })} /> Star</label>
                     <label><input type="checkbox" checked={entry.studied} onChange={e => {
-                      updateEntry(entry.id, { studied: e.target.checked, lastReviewed: e.target.checked ? Date.now() : entry.lastReviewed });
+                      const updates: Partial<Entry> = { studied: e.target.checked };
+                      if (e.target.checked) {
+                        updates.lastReviewed = Date.now();
+                      } else if (entry.lastReviewed !== undefined) {
+                        updates.lastReviewed = entry.lastReviewed;
+                      }
+                      updateEntry(entry.id, updates);
                     }} /> Studied</label>
                     <button onClick={() => deleteEntry(entry.id)}>Delete</button>
                   </div>
@@ -1798,32 +2071,138 @@ const App = () => {
           </>
         )}
 
+      {showObservabilityDash && (
+        <div className="modal-overlay" onClick={() => setShowObservabilityDash(false)}>
+          <div className="modal large-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '900px', maxHeight: '90vh', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h2 style={{ margin: 0 }}>Observability & System Monitoring</h2>
+              <button
+                onClick={() => setShowObservabilityDash(false)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  fontSize: '24px',
+                  cursor: 'pointer',
+                  color: '#999'
+                }}
+              >
+                ×
+              </button>
+            </div>
+
+            <ObservabilityDashboard />
+
+            <div style={{ marginTop: '20px', padding: '12px', backgroundColor: '#f8f9fa', borderRadius: '4px' }}>
+              <button
+                onClick={performDataCleanup}
+                style={{
+                  padding: '10px 16px',
+                  backgroundColor: '#28a745',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '4px',
+                  cursor: 'pointer',
+                  fontSize: '14px'
+                }}
+              >
+                🧹 Run Data Cleanup
+              </button>
+              <p style={{ fontSize: '12px', color: '#666', marginTop: '8px' }}>
+                Removes audit logs, backups, and history older than the retention period set in privacy settings.
+              </p>
+            </div>
+
+            <div className="modal-buttons" style={{ marginTop: '20px' }}>
+              <button className="btn-secondary" onClick={() => setShowObservabilityDash(false)}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+
         {showPrivacySettings && (
           <div className="modal-overlay" onClick={() => setShowPrivacySettings(false)}>
             <div className="modal" onClick={e => e.stopPropagation()}>
               <h2>Privacy Settings</h2>
 
               <div style={{ marginBottom: '20px' }}>
-                <h3>Data Encryption</h3>
+                <h3>Data Protection</h3>
                 <div style={{ marginBottom: '12px' }}>
                   <label>
                     <input
                       type="checkbox"
-                      checked={privacySettings.enableEncryption}
-                      onChange={e => updatePrivacySettings({ enableEncryption: e.target.checked })}
+                      checked={privacySettings.dataEncryption}
+                      onChange={e => savePrivacySettings({ dataEncryption: e.target.checked })}
                     />
-                    Enable AES-256 encryption for stored data
+                    Enable Data Encryption
+                  </label>
+                  <p style={{ marginLeft: '24px', color: '#555', marginTop: '6px' }}>
+                    Encrypt stored data using the Web Crypto API.
+                  </p>
+                </div>
+
+                <div style={{ marginBottom: '12px' }}>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={privacySettings.autoBackup}
+                      onChange={e => savePrivacySettings({ autoBackup: e.target.checked })}
+                    />
+                    Enable Automatic Backups
+                  </label>
+                  <p style={{ marginLeft: '24px', color: '#555', marginTop: '6px' }}>
+                    Upload backups to Google Drive only when you allow it.
+                  </p>
+                </div>
+
+                <div style={{ marginBottom: '12px' }}>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={privacySettings.passwordProtectionEnabled}
+                      readOnly
+                    />
+                    Password Protection Enabled
                   </label>
                 </div>
-                <div style={{ marginBottom: '12px' }}>
-                  <label>
+
+                <div style={{ marginTop: '12px', padding: '12px', border: '1px solid #e2e8f0', borderRadius: '8px', backgroundColor: '#f8fafc' }}>
+                  <p style={{ marginBottom: '10px', fontWeight: 600 }}>Password Protection</p>
+                  <p style={{ marginBottom: '12px', color: '#555' }}>
+                    Use a local password to lock access to the app and your study data.
+                  </p>
+                  <div style={{ display: 'grid', gap: '10px' }}>
                     <input
-                      type="checkbox"
-                      checked={privacySettings.encryptBackups}
-                      onChange={e => updatePrivacySettings({ encryptBackups: e.target.checked })}
+                      type="password"
+                      value={newPassword}
+                      onChange={e => setNewPassword(e.target.value)}
+                      placeholder="New password"
+                      className="w-full px-3 py-2 border rounded"
                     />
-                    Encrypt backup files
-                  </label>
+                    <input
+                      type="password"
+                      value={confirmPassword}
+                      onChange={e => setConfirmPassword(e.target.value)}
+                      placeholder="Confirm password"
+                      className="w-full px-3 py-2 border rounded"
+                    />
+                    <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                      <button
+                        onClick={handleEnablePasswordProtection}
+                        style={{ padding: '10px 16px', backgroundColor: '#0b74de', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+                      >
+                        {privacySettings.passwordProtectionEnabled ? 'Change Password' : 'Enable Password Protection'}
+                      </button>
+                      {privacySettings.passwordProtectionEnabled && (
+                        <button
+                          onClick={handleDisablePasswordProtection}
+                          style={{ padding: '10px 16px', backgroundColor: '#dc3545', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+                        >
+                          Disable Password Protection
+                        </button>
+                      )}
+                    </div>
+                    {passwordActionMessage && <p style={{ color: '#333', fontSize: '14px' }}>{passwordActionMessage}</p>}
+                  </div>
                 </div>
               </div>
 
@@ -1833,8 +2212,8 @@ const App = () => {
                   <label>
                     <input
                       type="checkbox"
-                      checked={privacySettings.enableAnalytics}
-                      onChange={e => updatePrivacySettings({ enableAnalytics: e.target.checked })}
+                      checked={privacySettings.analyticsEnabled}
+                      onChange={e => savePrivacySettings({ analyticsEnabled: e.target.checked })}
                     />
                     Allow anonymous usage analytics
                   </label>
@@ -1843,10 +2222,10 @@ const App = () => {
                   <label>
                     <input
                       type="checkbox"
-                      checked={privacySettings.enableErrorReporting}
-                      onChange={e => updatePrivacySettings({ enableErrorReporting: e.target.checked })}
+                      checked={privacySettings.crashReporting}
+                      onChange={e => savePrivacySettings({ crashReporting: e.target.checked })}
                     />
-                    Enable error reporting for improvements
+                    Enable crash reporting for improvements
                   </label>
                 </div>
               </div>
@@ -1857,10 +2236,10 @@ const App = () => {
                   <label>
                     <input
                       type="checkbox"
-                      checked={privacySettings.allowDataSharing}
-                      onChange={e => updatePrivacySettings({ allowDataSharing: e.target.checked })}
+                      checked={privacySettings.dataSharing}
+                      onChange={e => savePrivacySettings({ dataSharing: e.target.checked })}
                     />
-                    Allow data sharing for collaborative features
+                    Allow anonymized data sharing for product improvement
                   </label>
                 </div>
               </div>
@@ -1870,8 +2249,8 @@ const App = () => {
                 <div style={{ marginBottom: '12px' }}>
                   <label>Data retention period:</label>
                   <select
-                    value={privacySettings.dataRetentionDays}
-                    onChange={e => updatePrivacySettings({ dataRetentionDays: parseInt(e.target.value) })}
+                    value={privacySettings.retentionPeriod}
+                    onChange={e => savePrivacySettings({ retentionPeriod: parseInt(e.target.value) })}
                     style={{ marginLeft: '8px', padding: '4px' }}
                   >
                     <option value={30}>30 days</option>
@@ -1898,16 +2277,22 @@ const App = () => {
                     Delete All Data
                   </button>
                 </div>
+                <p style={{ color: '#555', marginTop: '4px' }}>
+                  GDPR rights: export your data and permanently delete your stored information.
+                </p>
               </div>
 
-              <div style={{ marginBottom: '20px', padding: '12px', backgroundColor: '#f8f9fa', borderRadius: '4px', fontSize: '14px' }}>
+              <div style={{ marginBottom: '20px', padding: '12px', backgroundColor: '#f8f9fa', borderRadius: '4px' }}>
                 <h4>Privacy Policy</h4>
-                <p><strong>Last updated:</strong> {new Date().toLocaleDateString()}</p>
-                <p>This application is designed with privacy in mind. Your data is stored locally on your device and optionally encrypted. We do not collect personal information without your explicit consent.</p>
-                <p><strong>Data Storage:</strong> All study data is stored locally. Optional encryption protects your data with AES-256.</p>
-                <p><strong>Analytics:</strong> Anonymous usage statistics help improve the application. You can opt out at any time.</p>
-                <p><strong>Data Sharing:</strong> No data is shared with third parties unless you explicitly enable collaborative features.</p>
-                <p><strong>Data Deletion:</strong> You can export or delete all your data at any time.</p>
+                <p style={{ color: '#555', marginBottom: '12px' }}>
+                  Review the full privacy policy for details on data collection, sharing, and retention.
+                </p>
+                <button
+                  onClick={() => setShowPrivacyPolicyModal(true)}
+                  style={{ padding: '10px 16px', backgroundColor: '#3182ce', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+                >
+                  View Privacy Policy
+                </button>
               </div>
 
               <div className="modal-buttons">

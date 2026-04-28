@@ -14,6 +14,7 @@ export interface PrivacySettings {
   dataSharing: boolean;
   autoBackup: boolean;
   retentionPeriod: number; // days, 0 = unlimited
+  passwordProtectionEnabled: boolean;
 }
 
 export interface AuditLogEntry {
@@ -34,6 +35,7 @@ export const DEFAULT_PRIVACY_SETTINGS: PrivacySettings = {
   dataSharing: false,
   autoBackup: true,
   retentionPeriod: 365, // 1 year
+  passwordProtectionEnabled: false,
 };
 
 // Key management constants
@@ -45,6 +47,11 @@ const IV_LENGTH = 12;
 
 // Privacy settings storage
 const PRIVACY_SETTINGS_KEY = 'giac-privacy-settings';
+const PRIVACY_POLICY_KEY = 'giac-privacy-policy-accepted';
+const PRIVACY_POLICY_VERSION_KEY = 'giac-privacy-policy-version';
+const PASSWORD_PROTECTION_KEY = 'giac-password-protection-enabled';
+const PASSWORD_HASH_KEY = 'giac-password-hash';
+const PASSWORD_SALT_KEY = 'giac-password-salt';
 
 // Audit log storage
 const AUDIT_LOG_KEY = 'giac-audit-log';
@@ -197,7 +204,7 @@ export const loadEncryptionKeys = async (): Promise<EncryptionKey[]> => {
 
 export const getLatestEncryptionKey = async (): Promise<EncryptionKey | null> => {
   const keys = await loadEncryptionKeys();
-  return keys.length > 0 ? keys[0] : null;
+  return keys.length > 0 ? keys[0]! : null;
 };
 
 // Data encryption/decryption
@@ -324,11 +331,59 @@ export const updatePrivacySettings = (settings: Partial<PrivacySettings>): void 
   logAuditEvent('privacy_settings_updated', 'privacy_settings', settings);
 };
 
+export const isPrivacyPolicyAccepted = (): boolean => {
+  return localStorage.getItem(PRIVACY_POLICY_KEY) === 'true';
+};
+
+export const acceptPrivacyPolicy = (version: string = '1.0'): void => {
+  localStorage.setItem(PRIVACY_POLICY_KEY, 'true');
+  localStorage.setItem(PRIVACY_POLICY_VERSION_KEY, version);
+  logAuditEvent('privacy_policy_accepted', 'privacy_policy', { version });
+};
+
+export const isPasswordProtectionEnabled = (): boolean => {
+  return localStorage.getItem(PASSWORD_PROTECTION_KEY) === 'true';
+};
+
+export const hashPassword = async (password: string, salt: Uint8Array): Promise<string> => {
+  const encoder = new TextEncoder();
+  const data = new Uint8Array(salt.length + encoder.encode(password).length);
+  data.set(salt, 0);
+  data.set(encoder.encode(password), salt.length);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  return btoa(String.fromCharCode(...new Uint8Array(hashBuffer)));
+};
+
+export const enablePasswordProtection = async (password: string): Promise<void> => {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const hash = await hashPassword(password, salt);
+  localStorage.setItem(PASSWORD_PROTECTION_KEY, 'true');
+  localStorage.setItem(PASSWORD_HASH_KEY, hash);
+  localStorage.setItem(PASSWORD_SALT_KEY, btoa(String.fromCharCode(...salt)));
+  updatePrivacySettings({ passwordProtectionEnabled: true });
+  await logAuditEvent('password_protection_enabled', 'security');
+};
+
+export const verifyPassword = async (password: string): Promise<boolean> => {
+  const saltString = localStorage.getItem(PASSWORD_SALT_KEY);
+  const hash = localStorage.getItem(PASSWORD_HASH_KEY);
+  if (!saltString || !hash) return false;
+
+  const salt = Uint8Array.from(atob(saltString), c => c.charCodeAt(0));
+  const attempt = await hashPassword(password, salt);
+  return attempt === hash;
+};
+
+export const disablePasswordProtection = async (): Promise<void> => {
+  localStorage.removeItem(PASSWORD_PROTECTION_KEY);
+  localStorage.removeItem(PASSWORD_HASH_KEY);
+  localStorage.removeItem(PASSWORD_SALT_KEY);
+  updatePrivacySettings({ passwordProtectionEnabled: false });
+  await logAuditEvent('password_protection_disabled', 'security');
+};
+
 // Audit logging
 export const logAuditEvent = async (action: string, resource: string, details?: any): Promise<void> => {
-  const settings = getPrivacySettings();
-  if (!settings.analyticsEnabled) return;
-
   const entry: AuditLogEntry = {
     id: crypto.randomUUID(),
     timestamp: Date.now(),
@@ -360,9 +415,42 @@ export const getAuditLogs = async (): Promise<AuditLogEntry[]> => {
   }
 };
 
+export const getAuditSummary = async () => {
+  const logs = await getAuditLogs();
+  const actionCounts: Record<string, number> = {};
+  const resourceCounts: Record<string, number> = {};
+
+  logs.forEach(log => {
+    actionCounts[log.action] = (actionCounts[log.action] || 0) + 1;
+    resourceCounts[log.resource] = (resourceCounts[log.resource] || 0) + 1;
+  });
+
+  return {
+    total: logs.length,
+    actionCounts,
+    resourceCounts,
+    recent: logs.slice(-5).reverse()
+  };
+};
+
 export const clearAuditLogs = async (): Promise<void> => {
   localStorage.removeItem(AUDIT_LOG_KEY);
   await logAuditEvent('audit_logs_cleared', 'audit_log');
+};
+
+export const cleanupAuditLogs = async (retentionDays: number): Promise<number> => {
+  if (retentionDays <= 0) {
+    return 0;
+  }
+
+  const threshold = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  const logs = await getAuditLogs();
+  const preserved = logs.filter(log => log.timestamp >= threshold);
+  const removedCount = logs.length - preserved.length;
+
+  localStorage.setItem(AUDIT_LOG_KEY, JSON.stringify(preserved));
+  await logAuditEvent('audit_logs_pruned', 'audit_log', { retentionDays, removedCount });
+  return removedCount;
 };
 
 // Data export/deletion

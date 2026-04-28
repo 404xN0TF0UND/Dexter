@@ -250,7 +250,7 @@ export const deleteIndex = async (indexId: string) => {
   const currentId = await getCurrentIndexId();
   if (currentId === indexId) {
     if (filteredIndexes.length > 0) {
-      await setCurrentIndexId(filteredIndexes[0].id);
+      await setCurrentIndexId(filteredIndexes[0]!.id);
     } else {
       const defaultIndex = await createIndex('My Study Index');
       await setCurrentIndexId(defaultIndex.id);
@@ -306,6 +306,61 @@ export const autoBackupIndex = async (indexId: string, entries: Entry[]) => {
 export const loadIndexBackups = async (indexId: string): Promise<{ timestamp: number; entries: Entry[] }[]> => {
   const data = await secureGetItem(`giac-backups-${indexId}`);
   return data || [];
+};
+
+export const verifyIndexBackups = async (indexId: string): Promise<{ total: number; latestTimestamp: number | null; validCount: number; errors: string[] }> => {
+  const backups = await loadIndexBackups(indexId);
+  const errors: string[] = [];
+
+  backups.forEach((backup) => {
+    if (!Array.isArray(backup.entries)) {
+      errors.push(`Backup at ${new Date(backup.timestamp).toISOString()} is missing entries`);
+      return;
+    }
+
+    backup.entries.forEach((entry, entryIndex) => {
+      if (!entry || typeof entry !== 'object' || !('term' in entry) || !('book' in entry) || !('page' in entry)) {
+        errors.push(`Invalid entry in backup ${new Date(backup.timestamp).toISOString()} at position ${entryIndex}`);
+      }
+    });
+  });
+
+  return {
+    total: backups.length,
+    latestTimestamp: backups.length > 0 ? backups[backups.length - 1]!.timestamp : null,
+    validCount: backups.length - errors.length,
+    errors
+  };
+};
+
+export const cleanupIndexBackups = async (indexId: string, retentionDays: number): Promise<number> => {
+  if (retentionDays <= 0) {
+    return 0;
+  }
+
+  const backups = await loadIndexBackups(indexId);
+  const threshold = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  const keptBackups = backups.filter(backup => backup.timestamp >= threshold);
+  const deletedCount = backups.length - keptBackups.length;
+
+  await secureSetItem(`giac-backups-${indexId}`, keptBackups);
+  await logAuditEvent('backup_retention_pruned', indexId, { retentionDays, deletedCount });
+  return deletedCount;
+};
+
+export const cleanupIndexHistory = async (indexId: string, retentionDays: number): Promise<number> => {
+  if (retentionDays <= 0) {
+    return 0;
+  }
+
+  const history = await loadIndexHistory(indexId);
+  const threshold = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+  const keptHistory = history.filter(snapshot => snapshot.timestamp >= threshold);
+  const deletedCount = history.length - keptHistory.length;
+
+  await secureSetItem(`giac-history-${indexId}`, keptHistory);
+  await logAuditEvent('history_retention_pruned', indexId, { retentionDays, deletedCount });
+  return deletedCount;
 };
 
 export const restoreFromIndexHistory = async (indexId: string, timestamp: number) => {
@@ -366,7 +421,7 @@ export const exportToDOCX = async (entries: Entry[]) => {
           new TableCell({ children: [new Paragraph('Highlighted')] }),
         ],
       }),
-      ...groupedEntries[letter].map(entry => new TableRow({
+      ...groupedEntries[letter]!.map(entry => new TableRow({
         children: [
           new TableCell({ children: [new Paragraph(entry.term)] }),
           new TableCell({ children: [new Paragraph(entry.book.toString())] }),
@@ -443,8 +498,8 @@ export const parseBulk = (text: string): Omit<Entry, 'id'>[] => {
     const parts = line.split(',').map(s => s.trim());
     const entry = {
       term: parts[0] || '',
-      book: parseInt(parts[1]) || 0,
-      page: parseInt(parts[2]) || 0,
+      book: parseInt(parts[1] ?? '') || 0,
+      page: parseInt(parts[2] ?? '') || 0,
       category: '',
       notes: '',
       highlighted: false,
@@ -534,7 +589,7 @@ export const exportAsIndexText = (entries: Entry[]) => {
     text += `\n${letter}\n`;
     text += '-'.repeat(40) + '\n';
     
-    grouped[letter].forEach(entry => {
+    grouped[letter]!.forEach(entry => {
       text += `${entry.term}\n`;
       text += `  Book ${entry.book}, Page ${entry.page}\n`;
       if (entry.category) text += `  Category: ${entry.category}\n`;

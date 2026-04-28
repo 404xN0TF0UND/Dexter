@@ -45,7 +45,7 @@ export type StudySession = {
 
 export type StudySessionGoal = {
   type: 'count' | 'time' | 'category' | 'tag' | 'due';
-  value: number | string; // count, minutes, category name, tag name
+  value: number | string | null; // count, minutes, category name, tag name, or no value for due sessions
   targetCount?: number; // For time-based sessions
 };
 
