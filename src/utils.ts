@@ -608,8 +608,9 @@ export const exportAsIndexText = (entries: Entry[]) => {
 };
 
 // Google Drive Integration
-export const GOOGLE_CLIENT_ID = '257516220239-eurh8v6dd2q4ciikd2r5p4u9l8lmus72.apps.googleusercontent.com'; // Replace with your actual client ID
-export const GOOGLE_API_KEY = 'AIzaSyDq3icVJxerCemYu7l_vlpKekgPCwmIn4U'; // Replace with your actual API key
+const env = import.meta.env as Record<string, string | undefined>;
+export const GOOGLE_CLIENT_ID = env['VITE_GOOGLE_CLIENT_ID'] || ''; // Set in .env.production
+export const GOOGLE_API_KEY = env['VITE_GOOGLE_API_KEY'] || ''; // Set in .env.production
 
 export const loadGoogleAPI = (): Promise<void> => {
   return new Promise((resolve, reject) => {
