@@ -18,6 +18,17 @@ dist-ssr
 .idea
 .DS_Store
 *.suo
+
+# Deployment & Environment
+.env.production
+.env.*.local
+ssl/
+certbot/
+backups/
+
+# Build artifacts
+build.log
+*.tar.gz
 *.ntvs*
 *.njsproj
 *.sln
