@@ -1,503 +1,152 @@
-# Production Deployment Guide
+# Docker Deployment to LXC
 
-## Proxmox + Cloudflare + Docker
+Simple guide to deploy GIAC Book Indexer as a Docker container in an LXC container.
 
-This guide covers deploying the GIAC Book Indexer to production on local Proxmox infrastructure with Cloudflare DNS and Let's Encrypt SSL.
+## Quick Start (5 minutes)
 
-## Table of Contents
-
-1. [Architecture Overview](#architecture-overview)
-2. [Prerequisites](#prerequisites)
-3. [Proxmox Setup](#proxmox-setup)
-4. [Container Configuration](#container-configuration)
-5. [Cloudflare DNS Setup](#cloudflare-dns-setup)
-6. [SSL/TLS Certificate](#ssltls-certificate)
-7. [Deployment](#deployment)
-8. [Monitoring & Maintenance](#monitoring--maintenance)
-
----
-
-## Architecture Overview
-
-```
-                              Cloudflare
-                              (DNS + DDoS Protection)
-                                  |
-                                  v
-                            Your ISP / Public IP
-                                  |
-                                  v
-                         Proxmox Physical Host
-                                  |
-                    +-------------+-------------+
-                    |                           |
-                    v                           v
-            LXC Container 1              LXC Container 2
-            (App + Database)             (Backup/Monitor)
-                    |
-        +-------+---+---+-------+
-        |       |       |       |
-       Node   Docker  Nginx  Storage
+### 1. Prepare Code Locally
+```bash
+npm run build           # Build the app
+npm run type-check     # Verify types
+npm run test:run       # Run tests
 ```
 
-### Key Components
+### 2. Create LXC Container
 
-- **Proxmox Host**: Virtualization platform managing LXC containers
-- **LXC Container**: Lightweight Linux container for the application
-- **Docker**: Container runtime for the app
-- **Nginx**: Reverse proxy, SSL termination, load balancing
-- **Cloudflare**: DNS management, DDoS protection, SSL origin support
+In Proxmox UI:
+- Create new LXC container with Ubuntu 22.04
+- Allocate 2GB+ RAM, 20GB+ disk
+- **Enable nesting** - Required for Docker!
 
----
+### 3. Install Docker in LXC Container
 
-## Prerequisites
+SSH into the container and run:
+```bash
+apt update && apt upgrade -y
+apt install -y docker.io docker-compose git
+usermod -aG docker root
+systemctl start docker
+systemctl enable docker
+```
 
-### On Your Development Machine
-
-- [ ] Git installed
-- [ ] Docker and Docker Compose installed (for local testing)
-- [ ] Node.js 18+ (for building)
-
-### Proxmox Infrastructure
-
-- [ ] Proxmox VE 7.0+ installed
-- [ ] At least 4GB RAM available per container
-- [ ] 20GB+ disk space for application
-- [ ] Network bridge configured on Proxmox host
-
-### Cloudflare
-
-- [ ] Domain added to Cloudflare
-- [ ] Nameservers updated to Cloudflare's (usually takes 24-48 hours)
-- [ ] Cloudflare account with DNS edit permissions
-- [ ] Optional: Cloudflare API token for automation
-
-### Networking
-
-- [ ] Public IP address or port forwarding configured
-- [ ] Port 80 (HTTP) and 443 (HTTPS) accessible from the internet
-- [ ] Firewall rules allowing HTTPS traffic
-
----
-
-## Proxmox Setup
-
-### Step 1: Create LXC Container
-
-In Proxmox web UI (https://proxmox-host:8006):
-
-1. **Node > Create CT**
-2. **General Tab:**
-   - CTID: Auto-generated
-   - Hostname: `indexer`
-   - Unprivileged container: ✓
-   - Nesting: ✓
-
-3. **Template Tab:**
-   - Storage: local
-   - Template: `ubuntu-22.04` (or latest stable)
-
-4. **Root Disk Tab:**
-   - Storage: `local-lvm`
-   - Disk size: `30 GB` (minimum)
-
-5. **CPU Tab:**
-   - Cores: `2-4` (depending on load)
-
-6. **Memory Tab:**
-   - Memory: `4096 MB` (4GB minimum)
-   - Swap: `2048 MB`
-
-7. **Network Tab:**
-   - Name: `eth0`
-   - Bridge: `vmbr0` (default)
-   - IPv4: DHCP or static IP
-   - Important: Note the IP address
-
-8. **Finish**: Create container
-
-### Step 2: Configure Container Network
-
-Inside the container (via Proxmox console or SSH):
+### 4. Deploy Application
 
 ```bash
-# Static IP configuration (optional but recommended)
-sudo nano /etc/netplan/00-installer-config.yaml
-```
-
-Add:
-```yaml
-network:
-  version: 2
-  ethernets:
-    eth0:
-      dhcp4: false
-      addresses:
-        - 192.168.1.100/24  # Adjust to your network
-      routes:
-        - to: 0.0.0.0/0
-          via: 192.168.1.1
-      nameservers:
-        addresses: [1.1.1.1, 1.0.0.1]  # Cloudflare DNS
-```
-
-Apply:
-```bash
-sudo netplan apply
-```
-
-### Step 3: Enable Required Features
-
-```bash
-# Enable Docker nesting
-sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-
-# Make persistent
-echo 'kernel.apparmor_restrict_unprivileged_userns=0' | sudo tee -a /etc/sysctl.conf
-```
-
----
-
-## Container Configuration
-
-### Build Configuration
-
-Ensure you have a `.dockerignore` file:
-
-```
-node_modules/
-dist/
-.git/
-.env
-.env.local
-.env.*.local
-build.log
-coverage/
-.vscode/
-.idea/
-.DS_Store
-```
-
-### Environment Configuration
-
-Create `.env.production` in your repository root:
-
-```bash
-# Copy from template
-cp .env.production.example .env.production
-
-# Edit with your values
-nano .env.production
-```
-
-Fill in:
-- `VITE_SENTRY_DSN` - Your Sentry project DSN
-- `VITE_ROLLBAR_ACCESS_TOKEN` - Your Rollbar token
-- `VITE_APP_VERSION` - Current version number
-
----
-
-## Cloudflare DNS Setup
-
-### Step 1: Add DNS Record
-
-In Cloudflare Dashboard:
-
-1. **Zone > DNS**
-2. **Add Record**
-   - **Type**: `A` (for IPv4) or `AAAA` (for IPv6)
-   - **Name**: `indexer` (subdomain)
-   - **Content**: Your public IP or Proxmox host's WAN IP
-   - **TTL**: `Auto` (recommended)
-   - **Proxy Status**: `DNS only` initially
-   - **Save**
-
-### Step 2: Test DNS Resolution
-
-```bash
-# From your dev machine
-nslookup indexer.yourdomain.com
-# or
-dig indexer.yourdomain.com @1.1.1.1
-```
-
-Should resolve to your public IP.
-
-### Step 3: Enable Proxy (Optional but Recommended)
-
-Once SSL is working:
-
-1. Click the record
-2. **Proxy status**: Change to `Proxied`
-
-Benefits:
-- DDoS protection
-- IP masking
-- Global CDN for static assets
-
-**Note**: Proxied mode requires HTTPS. HTTP will be redirected.
-
----
-
-## SSL/TLS Certificate
-
-### Option 1: Let's Encrypt (Recommended for $0)
-
-#### Automatic Setup
-
-Inside the LXC container:
-
-```bash
-# Run deployment script
-curl -O https://raw.githubusercontent.com/yourusername/giac-book-indexer/main/deploy.sh
-chmod +x deploy.sh
-sudo ./deploy.sh indexer.yourdomain.com admin@yourdomain.com
-```
-
-#### Manual Setup
-
-```bash
-# Install Certbot
-sudo apt-get install certbot python3-certbot-nginx
-
-# Get certificate
-sudo certbot certonly --standalone \
-  -d indexer.yourdomain.com \
-  --email admin@yourdomain.com \
-  --agree-tos \
-  --non-interactive
-
-# Certificates stored in:
-# /etc/letsencrypt/live/indexer.yourdomain.com/
-```
-
-### Option 2: Cloudflare Origin CA Certificate (Free for Cloudflare customers)
-
-1. **Cloudflare Dashboard > SSL/TLS > Origin Server**
-2. **Create Certificate**
-3. **Download origin certificate**
-4. **Upload to container** `/etc/nginx/ssl/`
-
-### Auto-Renewal Setup
-
-Create cron job:
-
-```bash
-# Edit crontab
-sudo crontab -e
-
-# Add:
-0 2 * * * certbot renew --quiet && systemctl reload nginx
-```
-
----
-
-## Deployment
-
-### Step 1: SSH into Container
-
-```bash
-# From Proxmox host
-pct exec <CTID> -- bash
-# or SSH if you have SSH configured
-ssh root@<container-ip>
-```
-
-### Step 2: Clone Repository
-
-```bash
-cd /opt
-git clone https://github.com/yourusername/giac-book-indexer.git
-cd giac-book-indexer
-```
-
-### Step 3: Run Automated Deployment
-
-```bash
-chmod +x deploy.sh
-sudo ./deploy.sh indexer.yourdomain.com admin@yourdomain.com
-```
-
-### Step 4: Manual Verification
-
-```bash
-# Check containers running
-docker-compose ps
-
-# View logs
-docker-compose logs -f app
-
-# Test application
-curl http://localhost:3000
-```
-
-### Step 5: Test HTTPS
-
-```bash
-# From outside the container
-curl https://indexer.yourdomain.com
-```
-
-Should return HTML without SSL warnings.
-
----
-
-## Post-Deployment Configuration
-
-### Environment Variables
-
-Update production environment:
-
-```bash
-# Edit the env file
-sudo nano .env.production
-
-# Update with actual values:
-VITE_SENTRY_DSN=https://xxxxx@yyyyy.ingest.sentry.io/zzzzz
-VITE_ROLLBAR_ACCESS_TOKEN=your_actual_token
-VITE_APP_VERSION=1.0.0
-```
-
-Restart containers:
-
-```bash
-docker-compose restart app
-```
-
-### Firewall Rules (Proxmox Host)
-
-```bash
-# Allow HTTP/HTTPS traffic
-sudo ufw allow 80/tcp
-sudo ufw allow 443/tcp
-sudo ufw enable
-```
-
----
-
-## Monitoring & Maintenance
-
-### Container Health Checks
-
-```bash
-# View container status
-docker-compose ps
-
-# Check specific service logs
-docker-compose logs app
-docker-compose logs nginx
-
-# Follow logs in real-time
-docker-compose logs -f app
-
-# Check container resource usage
-docker stats
-```
-
-### Proxmox Monitoring
-
-1. **Proxmox Web UI > Node > LXC Container**
-2. **Summary tab** shows:
-   - CPU usage
-   - Memory usage
-   - Disk usage
-   - Network traffic
-
-### Application Monitoring
-
-- **Sentry Dashboard**: Error tracking and performance
-- **Rollbar Dashboard**: Error reports and deployment tracking
-- **Health endpoint**: `https://indexer.yourdomain.com/` (should return 200)
-
-### Backup Strategy
-
-```bash
-# Manual backup
-docker-compose exec app tar czf backup.tar.gz dist/
-
-# Automated backup (via cron)
-0 2 * * * cd /opt/giac-book-indexer && docker-compose exec -T app tar czf /backups/giac-$(date +\%Y\%m\%d).tar.gz dist/
-```
-
-### Updates & Patches
-
-```bash
-# Update containers
+# Clone repository
+git clone <your-repo> /opt/giac-book-indexer
 cd /opt/giac-book-indexer
-git pull origin main
-docker-compose build
-docker-compose up -d
 
-# Update Proxmox LXC OS packages
-sudo apt-get update && sudo apt-get upgrade -y
+# Start containers
+docker compose up -d
 ```
 
-### SSL Certificate Renewal
+The app runs on `localhost:3000` inside the container.
+
+## Accessing the Application
+
+### From Host Machine
+```bash
+# Get container IP
+docker inspect giac-book-indexer | grep IPAddress
+
+# Access via: http://<container-ip>:3000
+```
+
+### From Outside Network
+Set up a reverse proxy on the Proxmox host or configure network forwarding.
+
+## Environment Variables
+
+Create `.env.production` in the repository root:
+```bash
+VITE_APP_ENV=production
+VITE_APP_VERSION=1.0.0
+VITE_SENTRY_DSN=<optional>
+VITE_ROLLBAR_ACCESS_TOKEN=<optional>
+```
+
+## Managing the Container
 
 ```bash
-# Manual renewal (usually automatic)
-sudo certbot renew --force-renewal -d indexer.yourdomain.com
+# View logs
+docker compose logs -f
 
-# Check renewal status
-sudo certbot renew --dry-run
+# Stop
+docker compose down
+
+# Restart
+docker compose restart
+
+# Remove (clean slate)
+docker compose down -v
 ```
-
----
 
 ## Troubleshooting
 
-### Application Won't Start
+### Docker won't start in LXC
+- **Enable nesting** in Proxmox when creating the LXC container
+- Check: `cat /proc/sys/kernel/unprivileged_userns_clone` (should return 1)
 
+### Port already in use
 ```bash
-# Check logs
-docker-compose logs app
-
-# Verify environment variables
-docker-compose exec app env | grep VITE
+docker compose down
+docker compose up -d
 ```
 
-### Certificate Errors
-
+### App crashes immediately
 ```bash
-# Check certificate validity
-sudo openssl x509 -in /etc/letsencrypt/live/indexer.yourdomain.com/fullchain.pem -text -noout
-
-# Renew if needed
-sudo certbot renew --force-renewal
+docker compose logs
+# Check error messages and fix
 ```
 
-### High Memory Usage
+### Out of memory
+Increase LXC container RAM in Proxmox, or reduce resource limits in `docker-compose.yml`.
 
-```bash
-# Check what's using memory
-docker stats
+## Production Considerations
 
-# Reduce memory allocation in docker-compose.yml
-# Add: mem_limit: 512m
+- **Reverse Proxy**: Use HAProxy or another tool on the Proxmox host to expose externally
+- **SSL/TLS**: Configure at the host level with Let's Encrypt or self-signed certificates
+- **Backups**: Volume mount important data to persistent storage
+- **Resource Limits**: Configured in `docker-compose.yml`
+- **Health Checks**: Built into container, monitored automatically
+- **Logs**: Use `docker compose logs` or configure centralized logging
+
+## Architecture
+
+```
+Internet
+   ↓
+Proxmox Host
+   ↓
+LXC Container
+   ↓
+Docker Container (giac-book-indexer)
+   ↓
+Vite App on :3000
 ```
 
-### DNS Not Resolving
+## Common Tasks
 
+### Check if app is running
 ```bash
-# Test DNS
-dig indexer.yourdomain.com @8.8.8.8
-
-# Check Cloudflare DNS status
-nslookup indexer.yourdomain.com 1.1.1.1
-
-# Check nameservers
-whois yourdomain.com | grep "Nameserver"
+docker compose ps
 ```
 
----
+### View real-time logs
+```bash
+docker compose logs -f app
+```
 
-## Advanced: Load Balancing (Multiple Containers)
+### Rebuild without cache
+```bash
+docker compose build --no-cache
+docker compose up -d
+```
 
-For HA setup with multiple containers:
-
-1. Create 2-3 additional containers (same steps as above)
-2. Configure DNS round-robin in Cloudflare (A records with same subdomain, different IPs)
-3. Or use Proxmox's built-in HA features
+### SSH into running container
+```bash
+docker compose exec app sh
+```
 4. Update nginx upstream configuration for backend pool
 
 ---

@@ -1,27 +1,17 @@
 #!/bin/bash
 set -e
 
-# GIAC Book Indexer - Proxmox Deployment Script
-# This script deploys the app to a Proxmox LXC container
+# GIAC Book Indexer - Docker LXC Deployment Script
+# Simple deployment to Docker container in LXC
 
-echo "🚀 GIAC Book Indexer - Proxmox Deployment"
-echo "=========================================="
+echo "🚀 GIAC Book Indexer - Docker Deployment"
+echo "========================================"
 
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
-
-# Configuration
-DOMAIN="${1:-indexer.yourdomain.com}"
-EMAIL="${2:-admin@yourdomain.com}"
-REPO_URL="${3:-https://github.com/yourusername/giac-book-indexer.git}"
-
-echo -e "${YELLOW}Configuration:${NC}"
-echo "Domain: $DOMAIN"
-echo "Email: $EMAIL"
-echo "Repository: $REPO_URL"
 
 # Check if running on Linux
 if [[ "$OSTYPE" != "linux-gnu"* ]]; then
@@ -41,18 +31,22 @@ apt-get update
 apt-get upgrade -y
 
 # Install dependencies
-echo -e "${YELLOW}📦 Installing dependencies...${NC}"
+echo -e "${YELLOW}📦 Installing Docker and Git...${NC}"
 apt-get install -y \
     curl \
     wget \
     git \
-    certbot \
-    docker.io \
-    docker-compose
+    docker.io
 
-# Add user to docker group
-echo -e "${YELLOW}👤 Configuring Docker permissions...${NC}"
-usermod -aG docker root
+# Install Docker Compose
+echo -e "${YELLOW}📦 Installing Docker Compose...${NC}"
+curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+chmod +x /usr/local/bin/docker-compose
+
+# Start Docker service
+echo -e "${YELLOW}🐳 Starting Docker service...${NC}"
+systemctl start docker
+systemctl enable docker
 
 # Create app directory
 APP_DIR="/opt/giac-book-indexer"
@@ -60,83 +54,81 @@ echo -e "${YELLOW}📁 Creating app directory: $APP_DIR${NC}"
 mkdir -p "$APP_DIR"
 cd "$APP_DIR"
 
-# Clone repository
-echo -e "${YELLOW}📥 Cloning repository...${NC}"
+# Clone or pull repository
+echo -e "${YELLOW}📥 Getting application code...${NC}"
 if [ -d ".git" ]; then
-    git pull origin main
+    echo "Repository exists, pulling latest..."
+    git pull origin main 2>/dev/null || true
 else
-    git clone "$REPO_URL" .
+    echo "Cloning repository..."
+    git clone https://github.com/yourusername/giac-book-indexer.git . 2>/dev/null || {
+        echo -e "${YELLOW}⚠️  Could not clone - ensure code is in $APP_DIR${NC}"
+    }
 fi
 
-# Create SSL directory
-echo -e "${YELLOW}🔐 Setting up SSL directories...${NC}"
-mkdir -p certbot/{conf,www}
-chmod -R 755 certbot
-
-# Obtain SSL certificate
-echo -e "${YELLOW}🔐 Obtaining SSL certificate from Let's Encrypt...${NC}"
-certbot certonly --webroot \
-    -w "$APP_DIR/certbot/www" \
-    -d "$DOMAIN" \
-    --email "$EMAIL" \
-    --agree-tos \
-    --non-interactive \
-    --staging  # Remove --staging for production
-
-# Create .env.production
-echo -e "${YELLOW}⚙️  Creating .env.production...${NC}"
+# Check for .env.production
+echo -e "${YELLOW}⚙️  Checking environment configuration...${NC}"
 if [ ! -f ".env.production" ]; then
-    cp .env.production.example .env.production
-    echo -e "${YELLOW}⚠️  Please edit .env.production with your configuration${NC}"
-    exit 1
-fi
+    echo -e "${YELLOW}Creating .env.production template...${NC}"
+    cat > .env.production <<EOF
+# GIAC Book Indexer - Production Configuration
 
-# Update nginx.conf domain
-echo -e "${YELLOW}⚙️  Updating Nginx configuration...${NC}"
-sed -i "s/indexer.yourdomain.com/$DOMAIN/g" nginx.conf
+VITE_APP_ENV=production
+VITE_APP_VERSION=1.0.0
+
+# Optional: Sentry error tracking
+VITE_SENTRY_DSN=
+
+# Optional: Rollbar error tracking
+VITE_ROLLBAR_ACCESS_TOKEN=
+EOF
+    echo -e "${YELLOW}⚠️  .env.production created. Edit if needed before proceeding.${NC}"
+fi
 
 # Build and start containers
 echo -e "${YELLOW}🐳 Building Docker image...${NC}"
 docker-compose build
 
-echo -e "${YELLOW}🚀 Starting containers...${NC}"
+echo -e "${YELLOW}🚀 Starting application...${NC}"
 docker-compose up -d
 
 # Wait for app to be ready
-echo -e "${YELLOW}⏳ Waiting for application to be ready...${NC}"
-sleep 10
+echo -e "${YELLOW}⏳ Waiting for application startup...${NC}"
+sleep 5
 
 # Check health
 echo -e "${YELLOW}🏥 Checking application health...${NC}"
-if curl -f http://localhost:3000/ > /dev/null 2>&1; then
-    echo -e "${GREEN}✅ Application is running${NC}"
-else
+RETRIES=5
+while [ $RETRIES -gt 0 ]; do
+    if curl -f http://localhost:3000/ > /dev/null 2>&1; then
+        echo -e "${GREEN}✅ Application is healthy${NC}"
+        break
+    fi
+    echo "Health check failed, retrying... ($RETRIES left)"
+    RETRIES=$((RETRIES - 1))
+    sleep 2
+done
+
+if [ $RETRIES -eq 0 ]; then
     echo -e "${RED}❌ Application health check failed${NC}"
+    echo "Logs:"
     docker-compose logs app
     exit 1
 fi
-
-# Setup auto-renewal for SSL
-echo -e "${YELLOW}🔄 Setting up SSL auto-renewal...${NC}"
-certbot renew --dry-run  # Test renewal
-
-# Add to crontab for auto-renewal
-CRON_CMD="0 2 * * * /usr/bin/certbot renew --quiet && docker-compose -f $APP_DIR/docker-compose.yml exec -T nginx nginx -s reload"
-(crontab -l 2>/dev/null | grep -v "$APP_DIR" ; echo "$CRON_CMD") | crontab -
 
 # Create systemd service for auto-start
 echo -e "${YELLOW}📋 Creating systemd service...${NC}"
 cat > /etc/systemd/system/giac-indexer.service <<EOF
 [Unit]
-Description=GIAC Book Indexer
+Description=GIAC Book Indexer Docker Container
 After=docker.service
 Requires=docker.service
 
 [Service]
 Type=oneshot
 WorkingDirectory=$APP_DIR
-ExecStart=/usr/bin/docker-compose up -d
-ExecStop=/usr/bin/docker-compose down
+ExecStart=/usr/local/bin/docker-compose up -d
+ExecStop=/usr/local/bin/docker-compose down
 RemainAfterExit=yes
 
 [Install]
@@ -146,15 +138,22 @@ EOF
 systemctl daemon-reload
 systemctl enable giac-indexer.service
 
+# Display completion info
 echo -e "${GREEN}"
 echo "✅ Deployment Complete!"
-echo "=========================================="
-echo "Application URL: https://$DOMAIN"
-echo "API Health Check: https://$DOMAIN/api/health"
+echo "========================================"
+echo "Application running on: http://localhost:3000"
+echo "Container: giac-book-indexer"
+echo ""
+echo "Useful commands:"
+echo "  View logs:       docker-compose logs -f"
+echo "  Stop container:  docker-compose down"
+echo "  Restart:         docker-compose restart"
+echo "  Check status:    docker-compose ps"
 echo ""
 echo "Next steps:"
-echo "1. Update Cloudflare DNS to point $DOMAIN to this server's IP"
-echo "2. Monitor logs: docker-compose logs -f"
-echo "3. Update .env.production with production credentials"
-echo "=========================================="
+echo "1. Access: http://$(hostname -I | awk '{print $1}'):3000"
+echo "2. Configure reverse proxy (HAProxy, nginx) on Proxmox host for external access"
+echo "3. Set up SSL/TLS on Proxmox host level"
+echo "========================================"
 echo -e "${NC}"
