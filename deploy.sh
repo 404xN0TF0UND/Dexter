@@ -61,7 +61,7 @@ if [ -d ".git" ]; then
     git pull origin main 2>/dev/null || true
 else
     echo "Cloning repository..."
-    git clone https://github.com/yourusername/giac-book-indexer.git . 2>/dev/null || {
+    git clone https://github.com/404xN0TF0UND/Dexter . 2>/dev/null || {
         echo -e "${YELLOW}⚠️  Could not clone - ensure code is in $APP_DIR${NC}"
     }
 fi
