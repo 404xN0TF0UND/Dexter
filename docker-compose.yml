@@ -32,3 +32,12 @@ services:
         reservations:
           cpus: '1'
           memory: 512M
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    command: tunnel run Indexer
+    volumes:
+      - /root/.cloudflared:/root/.cloudflared:ro
+    restart: unless-stopped
+    depends_on:
+      - app
