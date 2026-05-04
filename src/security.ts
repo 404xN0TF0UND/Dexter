@@ -56,6 +56,32 @@ const PASSWORD_SALT_KEY = 'giac-password-salt';
 // Audit log storage
 const AUDIT_LOG_KEY = 'giac-audit-log';
 
+// Web Crypto API feature detection
+export const isWebCryptoAvailable = (): boolean => {
+  return typeof crypto !== 'undefined' &&
+         typeof crypto.subtle !== 'undefined' &&
+         typeof crypto.subtle.generateKey === 'function' &&
+         typeof crypto.randomUUID === 'function';
+};
+
+// Fallback UUID generation
+export const generateFallbackUUID = (): string => {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
+};
+
+// Fallback random values
+export const generateFallbackRandomValues = (length: number): Uint8Array => {
+  const array = new Uint8Array(length);
+  for (let i = 0; i < length; i++) {
+    array[i] = Math.floor(Math.random() * 256);
+  }
+  return array;
+};
+
 // Data sanitization utilities
 export const sanitizeInput = (input: string): string => {
   if (typeof input !== 'string') return '';
@@ -92,6 +118,16 @@ export const sanitizeEntry = (entry: any): any => {
 
 // Encryption key management
 export const generateMasterKey = async (password?: string): Promise<CryptoKey> => {
+  if (!isWebCryptoAvailable()) {
+    // Fallback: return a mock key for non-crypto browsers
+    return {
+      type: 'secret',
+      algorithm: { name: ENCRYPTION_ALGORITHM, length: KEY_LENGTH },
+      extractable: false,
+      usages: ['encrypt', 'decrypt']
+    } as CryptoKey;
+  }
+
   const salt = password ? await getSaltFromPassword(password) : crypto.getRandomValues(new Uint8Array(16));
 
   const keyMaterial = await crypto.subtle.importKey(
@@ -117,6 +153,25 @@ export const generateMasterKey = async (password?: string): Promise<CryptoKey> =
 };
 
 export const getSaltFromPassword = async (password: string): Promise<Uint8Array> => {
+  if (!isWebCryptoAvailable()) {
+    // Fallback: simple hash-based salt generation
+    const encoder = new TextEncoder();
+    const data = encoder.encode(password + MASTER_KEY_SALT);
+    // Simple fallback hash using a basic algorithm
+    let hash = 0;
+    for (let i = 0; i < data.length; i++) {
+      const byte = data[i];
+      if (byte !== undefined) {
+        hash = ((hash << 5) - hash + byte) & 0xffffffff;
+      }
+    }
+    const hashBytes = new Uint8Array(16);
+    for (let i = 0; i < 16; i++) {
+      hashBytes[i] = (hash >> (i * 8)) & 0xff;
+    }
+    return hashBytes;
+  }
+
   const encoder = new TextEncoder();
   const data = encoder.encode(password + MASTER_KEY_SALT);
   const hash = await crypto.subtle.digest('SHA-256', data);
@@ -124,6 +179,22 @@ export const getSaltFromPassword = async (password: string): Promise<Uint8Array>
 };
 
 export const generateDataEncryptionKey = async (): Promise<EncryptionKey> => {
+  if (!isWebCryptoAvailable()) {
+    // Fallback: create a mock key for non-crypto browsers
+    const mockKey = {
+      type: 'secret',
+      algorithm: { name: ENCRYPTION_ALGORITHM, length: KEY_LENGTH },
+      extractable: true,
+      usages: ['encrypt', 'decrypt']
+    } as CryptoKey;
+
+    return {
+      key: mockKey,
+      keyId: generateFallbackUUID(),
+      created: Date.now()
+    };
+  }
+
   const key = await crypto.subtle.generateKey(
     { name: ENCRYPTION_ALGORITHM, length: KEY_LENGTH },
     true,
@@ -209,6 +280,11 @@ export const getLatestEncryptionKey = async (): Promise<EncryptionKey | null> =>
 
 // Data encryption/decryption
 export const encryptData = async (data: any, key?: CryptoKey): Promise<string> => {
+  if (!isWebCryptoAvailable()) {
+    // Fallback: return base64 encoded JSON without encryption
+    return btoa(JSON.stringify(data));
+  }
+
   const encryptionKey = key || (await getLatestEncryptionKey())?.key;
   if (!encryptionKey) {
     throw new Error('No encryption key available');
@@ -235,6 +311,16 @@ export const encryptData = async (data: any, key?: CryptoKey): Promise<string> =
 };
 
 export const decryptData = async (encryptedData: string, key?: CryptoKey): Promise<any> => {
+  if (!isWebCryptoAvailable()) {
+    // Fallback: decode base64 and parse JSON
+    try {
+      return JSON.parse(atob(encryptedData));
+    } catch (error) {
+      console.error('Fallback decryption failed:', error);
+      throw new Error('Failed to decrypt data');
+    }
+  }
+
   const encryptionKey = key || (await getLatestEncryptionKey())?.key;
   if (!encryptionKey) {
     throw new Error('No encryption key available');
@@ -346,6 +432,26 @@ export const isPasswordProtectionEnabled = (): boolean => {
 };
 
 export const hashPassword = async (password: string, salt: Uint8Array): Promise<string> => {
+  if (!isWebCryptoAvailable()) {
+    // Fallback: simple hash function
+    const encoder = new TextEncoder();
+    const passwordBytes = encoder.encode(password);
+    const data = new Uint8Array(salt.length + passwordBytes.length);
+    data.set(salt, 0);
+    data.set(passwordBytes, salt.length);
+
+    // Simple hash function
+    let hash = 0;
+    for (let i = 0; i < data.length; i++) {
+      const byte = data[i];
+      if (byte !== undefined) {
+        hash = ((hash << 5) - hash + byte) & 0xffffffff;
+      }
+    }
+
+    return btoa(hash.toString());
+  }
+
   const encoder = new TextEncoder();
   const data = new Uint8Array(salt.length + encoder.encode(password).length);
   data.set(salt, 0);
@@ -355,6 +461,11 @@ export const hashPassword = async (password: string, salt: Uint8Array): Promise<
 };
 
 export const enablePasswordProtection = async (password: string): Promise<void> => {
+  if (!isWebCryptoAvailable()) {
+    console.warn('Web Crypto API not available. Password protection cannot be enabled.');
+    throw new Error('Password protection requires Web Crypto API support');
+  }
+
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const hash = await hashPassword(password, salt);
   localStorage.setItem(PASSWORD_PROTECTION_KEY, 'true');
@@ -385,12 +496,12 @@ export const disablePasswordProtection = async (): Promise<void> => {
 // Audit logging
 export const logAuditEvent = async (action: string, resource: string, details?: any): Promise<void> => {
   const entry: AuditLogEntry = {
-    id: crypto.randomUUID(),
+    id: isWebCryptoAvailable() ? crypto.randomUUID() : generateFallbackUUID(),
     timestamp: Date.now(),
     action,
     resource,
     details,
-    userAgent: navigator.userAgent
+    userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'Unknown'
   };
 
   const logs = await getAuditLogs();
@@ -520,9 +631,21 @@ export const clearSecureToken = async (service: string = 'google-drive'): Promis
 
 // Initialize encryption on first use
 export const initializeEncryption = async (): Promise<void> => {
-  const existingKeys = await loadEncryptionKeys();
-  if (existingKeys.length === 0) {
-    const newKey = await generateDataEncryptionKey();
-    await storeEncryptionKey(newKey);
+  if (!isWebCryptoAvailable()) {
+    console.warn('Web Crypto API not available. Encryption features will be disabled.');
+    // Disable encryption in privacy settings
+    updatePrivacySettings({ dataEncryption: false });
+    return;
+  }
+
+  try {
+    const existingKeys = await loadEncryptionKeys();
+    if (existingKeys.length === 0) {
+      const newKey = await generateDataEncryptionKey();
+      await storeEncryptionKey(newKey);
+    }
+  } catch (error) {
+    console.error('Failed to initialize encryption, disabling encryption features:', error);
+    updatePrivacySettings({ dataEncryption: false });
   }
 };
