@@ -38,6 +38,8 @@ services:
     command: tunnel run Indexer
     volumes:
       - /root/.cloudflared:/root/.cloudflared:ro
+    environment:
+      - TUNNEL_ORIGIN_CERT=/root/.cloudflared/cert.pem
     restart: unless-stopped
     depends_on:
       - app
