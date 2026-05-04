@@ -33,7 +33,7 @@ systemctl enable docker
 
 ```bash
 # Clone repository
-git clone <your-repo> /opt/giac-book-indexer
+git clone https://github.com/404xN0TF0UND/Dexter /opt/giac-book-indexer
 cd /opt/giac-book-indexer
 
 # Start containers
