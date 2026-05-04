@@ -39,10 +39,10 @@ To enable Google Drive backup and sync functionality:
 3. Configure the OAuth consent screen if prompted
 4. Select "Web application" as application type
 5. Add authorized origins:
-   - `http://localhost:5173` (for development)
+   - `http://localhost:3000` (for Docker deployment)
    - Your production domain
 6. Add authorized redirect URIs:
-   - `http://localhost:5173` (for development)
+   - `http://localhost:3000` (for Docker deployment)
    - Your production domain
 
 ### 3. Configure the Application

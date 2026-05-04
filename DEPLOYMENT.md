@@ -63,7 +63,27 @@ VITE_APP_ENV=production
 VITE_APP_VERSION=1.0.0
 VITE_SENTRY_DSN=<optional>
 VITE_ROLLBAR_ACCESS_TOKEN=<optional>
+VITE_GOOGLE_CLIENT_ID=<your-google-client-id>
+VITE_GOOGLE_API_KEY=<optional-google-api-key>
 ```
+
+## Google Drive Backup Configuration
+
+For Google Drive backup functionality:
+
+1. **Update OAuth Credentials** in Google Cloud Console:
+   - Go to APIs & Services → Credentials
+   - Edit your OAuth 2.0 Client ID
+   - Add authorized origins: `http://your-domain.com:3000`
+   - Add authorized redirect URIs: `http://your-domain.com:3000`
+
+2. **Set Environment Variables** (see above)
+
+3. **Test Connection**:
+   ```bash
+   docker compose logs -f app
+   # Look for Google API initialization messages
+   ```
 
 ## Managing the Container
 
