@@ -4,7 +4,7 @@ import { exportToXLSX, exportToCSV, exportToDOCX, exportToPDF, importFromCSV, pa
 import { PrivacyPolicy } from './PrivacyPolicy';
 import type { ReviewStatus } from './types';
 import type { PrivacySettings as PrivacySettingsType } from './security';
-import { getPrivacySettings, updatePrivacySettings as updatePrivacySettingsStorage, acceptPrivacyPolicy, isPasswordProtectionEnabled, enablePasswordProtection, disablePasswordProtection, verifyPassword, DEFAULT_PRIVACY_SETTINGS, cleanupAuditLogs } from './security';
+import { getPrivacySettings, updatePrivacySettings as updatePrivacySettingsStorage, acceptPrivacyPolicy, isPasswordProtectionEnabled, enablePasswordProtection, disablePasswordProtection, verifyPassword, DEFAULT_PRIVACY_SETTINGS, cleanupAuditLogs, generateUUID } from './security';
 import { initTelemetry, captureError, captureBreadcrumb } from './telemetry';
 import { ObservabilityDashboard } from './components/ObservabilityDashboard';
 import toast, { Toaster } from 'react-hot-toast';
@@ -634,7 +634,7 @@ ${entry.notes}` : `What term is described by Book ${entry.book}, Page ${entry.pa
       toast.error('Duplicate entry');
       return;
     }
-    const entry: Entry = { ...newEntry, id: crypto.randomUUID() };
+    const entry: Entry = { ...newEntry, id: generateUUID() };
     setEntries([...entries, entry]);
     setNewEntry({ term: '', book: 0, page: 0, category: '', notes: '', highlighted: false, studied: false, bookTitle: '', favorite: false, tags: [] });
     setIsAddingNewCategory(false);
@@ -643,7 +643,7 @@ ${entry.notes}` : `What term is described by Book ${entry.book}, Page ${entry.pa
   };
 
   const addBulk = () => {
-    const newEntries = parseBulk(bulkText).map(e => ({ ...e, id: crypto.randomUUID() }));
+    const newEntries = parseBulk(bulkText).map(e => ({ ...e, id: generateUUID() }));
     const filtered = newEntries.filter(ne => !entries.some(e => e.term === ne.term && e.book === ne.book && e.page === ne.page));
     setEntries([...entries, ...filtered]);
     setBulkText('');

@@ -73,13 +73,12 @@ export const generateFallbackUUID = (): string => {
   });
 };
 
-// Fallback random values
-export const generateFallbackRandomValues = (length: number): Uint8Array => {
-  const array = new Uint8Array(length);
-  for (let i = 0; i < length; i++) {
-    array[i] = Math.floor(Math.random() * 256);
+// Safe UUID generation utility
+export const generateUUID = (): string => {
+  if (isWebCryptoAvailable()) {
+    return crypto.randomUUID();
   }
-  return array;
+  return generateFallbackUUID();
 };
 
 // Data sanitization utilities
@@ -201,7 +200,7 @@ export const generateDataEncryptionKey = async (): Promise<EncryptionKey> => {
     ['encrypt', 'decrypt']
   );
 
-  const keyId = crypto.randomUUID();
+  const keyId = generateUUID();
 
   return {
     key,
@@ -496,7 +495,7 @@ export const disablePasswordProtection = async (): Promise<void> => {
 // Audit logging
 export const logAuditEvent = async (action: string, resource: string, details?: any): Promise<void> => {
   const entry: AuditLogEntry = {
-    id: isWebCryptoAvailable() ? crypto.randomUUID() : generateFallbackUUID(),
+    id: generateUUID(),
     timestamp: Date.now(),
     action,
     resource,

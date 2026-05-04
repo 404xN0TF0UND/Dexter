@@ -11,7 +11,8 @@ import jsPDF from 'jspdf';import {
   initializeEncryption,
   storeSecureToken,
   getSecureToken,
-  clearSecureToken
+  clearSecureToken,
+  generateUUID
 } from './security';
 // Google Drive API types
 declare global {
@@ -223,7 +224,7 @@ export const setCurrentIndexId = async (indexId: string) => {
 export const createIndex = async (name: string): Promise<IndexMetadata> => {
   const indexes = await getAllIndexes();
   const newIndex: IndexMetadata = {
-    id: crypto.randomUUID(),
+    id: generateUUID(),
     name,
     created: Date.now(),
     modified: Date.now(),
@@ -473,7 +474,7 @@ export const importFromCSV = (file: File, callback: (entries: Entry[]) => void) 
     complete: (results: Papa.ParseResult<any>) => {
       const entries: Entry[] = (results.data as any[]).map((row) => {
         const entry = {
-          id: crypto.randomUUID(),
+          id: generateUUID(),
           term: row.term || '',
           book: parseInt(row.book) || 0,
           page: parseInt(row.page) || 0,
@@ -969,7 +970,7 @@ export const createStudySession = (
   }
 
   return {
-    id: crypto.randomUUID(),
+    id: generateUUID(),
     name,
     created: Date.now(),
     goal,
