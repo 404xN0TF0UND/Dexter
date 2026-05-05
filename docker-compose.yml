@@ -7,7 +7,10 @@ services:
     
     ports:
       - "3000:3000"
-    
+
+    env_file:
+      - .env.production
+
     environment:
       - NODE_ENV=production
       - VITE_APP_ENV=production

@@ -67,6 +67,8 @@ VITE_GOOGLE_CLIENT_ID=<your-google-client-id>
 VITE_GOOGLE_API_KEY=<optional-google-api-key>
 ```
 
+> Note: The app build uses `.env.production` to inject Vite variables at build time, and `docker-compose.yml` now also loads the file into the container runtime environment.
+
 ## Google Drive Backup Configuration
 
 For Google Drive backup functionality:
