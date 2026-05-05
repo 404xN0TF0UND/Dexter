@@ -36,10 +36,8 @@ services:
   cloudflared:
     image: cloudflare/cloudflared:latest
     command: tunnel run Indexer
-    volumes:
-      - /root/.cloudflared:/root/.cloudflared:ro
     environment:
-      - TUNNEL_ORIGIN_CERT=/root/.cloudflared/cert.pem
+      - TUNNEL_TOKEN=eyJhIjoiZDc1OGQzM2NmZWRiM2ZiMzNhMzBlY2FlMGUwZWM0OWQiLCJ0IjoiMTEyMzFlOWUtNmY5YS00OWI4LTkwN2EtMmVkNGMyOGMwNGM0IiwicyI6Ik0ySXlNR00yWTJJdE1USTRPUzAwWTJaakxXSTNZMkl0WkRNMk0yVTRNMkU1WlRCbCJ9CERT=/root/.cloudflared/cert.pem
     restart: unless-stopped
     depends_on:
       - app
